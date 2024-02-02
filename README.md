@@ -1,3 +1,5 @@
+# MixedFields Binary Format
+
 MixedFields is a lightweight, variable field length binary format. It's currently in pre-alpha.
 
 Writing binary data to a file:
