@@ -14,7 +14,7 @@ Writing binary data to a file:
 >>> mf.close()
 ```
 
-Lazy read items from the same MixedFields object:
+Lazy read items from the same MixedFields file:
 
 ```
 >>> import mixed_fields
