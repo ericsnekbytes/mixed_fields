@@ -34,7 +34,12 @@ b''
 ```
 
 The file format consists entirely of tagged fields, where each field is
-<tag> + <payload> + <endbyte>. Variable size fields have a length subfield
-just before the payload, which itself is variable size (the leading bit
-of each byte is 1 when there's a continuation byte, and 0 when the last byte
-of the size field has been reached, so 7 bit lengths only need 1 size byte).
+`<tag> + <payload> + <endbyte>`. Tags are `<start_byte> + <4 letter tag name>`,
+for example the header tag is b'\x1cMixd'.
+
+Variable size fields have a length subfield just before the payload, which
+itself is variable size (the leading bit of each byte is 1 when there's a
+continuation byte, and 0 when the last byte of the size field has been reached,
+so 7 bit lengths only need 1 size byte starting with 0).
+
+Every file has a header field, metadata field, and an end-of-file field.
