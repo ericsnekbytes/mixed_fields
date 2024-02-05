@@ -4,6 +4,13 @@ import traceback
 from types import SimpleNamespace
 
 
+FIELDINFO = SimpleNamespace(
+    PAYLOAD='PAYLOAD',
+    ENDBYTE='ENDBYTE',
+    TAG='TAG',
+)
+
+
 class MixedFieldsError(Exception):
     pass
 
@@ -67,12 +74,20 @@ class MixedFields:
         + ENDBYTE_META_STOP
     )
 
+    # Extra (user) metadata field
+    TAG_EXTRA_METADATA = (
+        SEP_RECORD
+        + b'eMDT'
+    )
+    TAG_EMETA = TAG_EXTRA_METADATA  # Convenience
+    ENDBYTE_EXTRA_METADATA = SEP_RECORD
+
     # General data field (TAG + PAYLOAD + END_BYTE)
     TAG_DATA = (
-        SEP_GROUP
+        SEP_RECORD
         + b'sDAT'
     )
-    ENDBYTE_DATA = SEP_GROUP
+    ENDBYTE_DATA = SEP_RECORD
 
     # End file field
     TAG_ENDFILE = (
@@ -86,6 +101,9 @@ class MixedFields:
         + PAYLOAD_ENDFILE
         + ENDBYTE_ENDFILE
     )
+
+    # Store here for users/convenience
+    INFO = FIELDINFO
 
     def __init__(self, path=None):
         self._path = path
@@ -116,9 +134,29 @@ class MixedFields:
         self._eof = b''
 
     def _is_variable_length(self, tag):
-        if tag in {self.TAG_DATA, self.TAG_METADATA}:
+        if tag in {self.TAG_DATA, self.TAG_METADATA, self.TAG_EXTRA_METADATA}:
             return True
         return False
+
+    def split_sized_chunk(self, chunk):
+        """Read/remove the size field from the front of a chunk, then return the size and remaining chunk"""
+        if len(chunk) == 0:
+            raise MixedFieldsError('EMPTY_CHUNK', 'Error, cannot read size from empty chunk')
+
+        # Get the size subfield
+        size_subfield = b''
+        for byte_val in chunk:
+            size_subfield += bytes([byte_val])
+            if not (byte_val & 0b1000_0000):
+                break
+        size_value = self.read_size_subfield(size_subfield)
+
+        # Get the chunk remainder
+        partial_chunk = b''
+        if len(size_subfield) < len(chunk):  # A zero length payload is valid
+            partial_chunk = chunk[len(size_subfield):]
+
+        return (size_value, partial_chunk)
 
     # Read a single data field, return the payload bytes (not header, metadata, or end of file tags)
     def read_item(self):
@@ -137,17 +175,26 @@ class MixedFields:
             return b''
 
         # Start reading fields
+        tag = b''
         chunk = b''  # Payload bytes
-        data_field_read = False
+        end_byte = b''
+        user_field_read = False
+        valid_tags = {
+            self.TAG_HEADER,
+            self.TAG_METADATA,
+            self.TAG_EXTRA_METADATA,
+            self.TAG_DATA,
+            self.TAG_ENDFILE
+        }
         with open(self._path, 'rb') as fhandle:
             # Set position to last unread byte
             fhandle.seek(self._head)
 
-            while not data_field_read:
+            while not user_field_read:
                 chunk = b''  # Reset
 
                 tag = fhandle.read(self.TAG_SIZE)
-                if len(tag) < self.TAG_SIZE:
+                if len(tag) < self.TAG_SIZE or tag not in valid_tags:
                     raise MixedFieldsError('BAD_TAG', 'Error, invalid tag')
 
                 # Check for/get size field value
@@ -172,7 +219,7 @@ class MixedFields:
                             size_subfield += current_byte
                             break
 
-                    size_value = self.read_size_field(size_subfield)
+                    size_value = self.read_size_subfield(size_subfield)
 
                 # Read in payload for variable-size fields here
                 if size_subfield:
@@ -220,13 +267,18 @@ class MixedFields:
                 if self._eof:  # TODO make this behave differently...N files per physical file?
                     break
 
-                if tag == self.TAG_DATA:
-                    data_field_read = True
-
                 # Read the end byte last (there are plans for fixed length payloads which have to be read first)
                 end_byte = fhandle.read(len(self.ENDBYTE_HEADER))
-                if end_byte != self.ENDBYTE_DATA:  # TODO eventual support for other fields
-                    raise MixedFieldsError('BAD_DATA_ENDBYTE', f'Error, bad data endbyte: {str(end_byte)}')
+                if tag == self.TAG_DATA:
+                    if end_byte != self.ENDBYTE_DATA:
+                        raise MixedFieldsError('BAD_DATA_ENDBYTE', f'Error, bad data endbyte: {str(end_byte)}')
+                if tag == self.TAG_EXTRA_METADATA:
+                    if end_byte != self.ENDBYTE_EXTRA_METADATA:
+                        raise MixedFieldsError('BAD_EXTRA_METADATA_ENDBYTE', f'Error, bad extra metadata endbyte: {str(end_byte)}')
+
+                # Stop reading once a field has been consumed
+                if tag in {self.TAG_DATA, self.TAG_EXTRA_METADATA}:
+                    user_field_read = True
 
                 # Store seek position for subsequent reads
                 self._head = fhandle.tell()
@@ -234,7 +286,8 @@ class MixedFields:
         if not chunk and not self._eof:  # Error out when EOF is missing and file end is reached
             raise MixedFieldsError('MISSING_EOF', 'Error, missing EOF field!')
 
-        return chunk
+        field_info = self.INFO
+        return {field_info.TAG: tag, field_info.PAYLOAD: chunk, field_info.ENDBYTE: end_byte}
 
     def _write_field(self, tag, item_bytes, end_byte):
         return self._write(tag + item_bytes + end_byte)
@@ -306,7 +359,7 @@ class MixedFields:
 
         return size_field_bits
 
-    def read_size_field(self, size_field_bytes):
+    def read_size_subfield(self, size_field_bytes):
         size_value_bit_string = ''
         for bb in size_field_bytes:
             size_bits_no_carrier = bb & 0b0111_1111  # Strip the leading carrier digit off
@@ -316,9 +369,11 @@ class MixedFields:
         size_value = int(size_value_bit_string, 2)
         return size_value
 
-    def write_item(self, item_bytes):
+    def write_item(self, item_bytes, tag=TAG_DATA):
         if not self._path_set():
             raise MixedFieldsError('PATH_NONE', 'Error, path is not set')
+        if not (tag in {self.TAG_DATA, self.TAG_EXTRA_METADATA}):
+            raise MixedFieldsError('INVALID_WRITE_TAG', 'Error, can only write TAG_DATA and TAG_EXTRA_METADATA fields')
         self._finalized_file_write = False
 
         # Write header/metadata if needed
@@ -327,9 +382,13 @@ class MixedFields:
                 self._write_header_field()
                 self._write_metadata()
 
+        # TODO support additional field types, better handling
+        desired_tag = tag
+        desired_endbyte = self.ENDBYTE_DATA if tag == self.TAG_DATA else self.ENDBYTE_EXTRA_METADATA
+
         # Write length field and user bytes
         item_size_field = self.get_size_subfield(len(item_bytes))
-        self._write_field(self.TAG_DATA, item_size_field + item_bytes, self.ENDBYTE_DATA)
+        self._write_field(desired_tag, item_size_field + item_bytes, desired_endbyte)
 
     def close(self):
         if self._bytes_written > 0 and not self._finalized_file_write:
