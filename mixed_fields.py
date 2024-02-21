@@ -201,23 +201,13 @@ class MixedFields:
                 size_subfield = b''
                 size_value = 0
                 if self._is_variable_length(tag):
-                    # TODO refactor this conditional
-                    # Don't read from file/change seek position unless field length is variable
                     current_byte = fhandle.read(1)
                     size_subfield += current_byte
-                    # TODO intercept invalid length field carrier structure
-                if self._is_variable_length(tag):
 
-                    # An MSB/leading bit of 1 means continue reading the size
-                    # field, 0 means this is the last byte of the size field
                     while current_byte[0] & 0b1000_0000:
-                        size_subfield += current_byte
+                        # Read and add the next byte to the subfield
                         current_byte = fhandle.read(1)
-
-                        # Check for the last byte, add and break if needed
-                        if not current_byte[0] & 0b1000_0000:
-                            size_subfield += current_byte
-                            break
+                        size_subfield += current_byte
 
                     size_value = self.read_size_subfield(size_subfield)
 
@@ -265,6 +255,7 @@ class MixedFields:
                     self._eof = tag + end_byte
 
                 if self._eof:  # TODO make this behave differently...N files per physical file?
+                    self._head = fhandle.tell()
                     break
 
                 # Read the end byte last (there are plans for fixed length payloads which have to be read first)
