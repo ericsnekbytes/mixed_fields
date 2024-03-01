@@ -104,6 +104,13 @@ class MixedFields:
 
     # Store here for users/convenience
     INFO = FIELDINFO
+    VALID_TAGS = {
+        TAG_HEADER,
+        TAG_METADATA,
+        TAG_ENDFILE,
+        TAG_DATA,
+        TAG_EXTRA_METADATA
+    }
 
     def __init__(self, path=None):
         self._path = path
@@ -134,6 +141,7 @@ class MixedFields:
         self._eof = b''
 
     def _is_variable_length(self, tag):
+        # TODO raise exception on invalid tag
         if tag in {self.TAG_DATA, self.TAG_METADATA, self.TAG_EXTRA_METADATA}:
             return True
         return False
@@ -157,6 +165,71 @@ class MixedFields:
             partial_chunk = chunk[len(size_subfield):]
 
         return (size_value, partial_chunk)
+
+    def _read_field(self):
+        with open(self._path, 'rb') as fhandle:
+            fhandle.seek(self._head)  # Start at last unread position
+
+            tag = fhandle.read(5)  # TODO const for this
+            if len(tag) < 5:
+                raise MixedFieldsError('BAD_TAG', 'Error, invalid tag length!')
+            chunk = b''
+
+            # Validate tag
+            if tag not in MixedFields.VALID_TAGS:
+                raise MixedFieldsError('INVALID_TAG', 'Error, invalid tag!')
+
+            # Read variable length payloads here
+            if self._is_variable_length(tag):
+                # Check for/get size field value
+                size_subfield = b''
+                size_value = 0
+                if self._is_variable_length(tag):
+                    current_byte = fhandle.read(1)
+                    size_subfield += current_byte
+
+                    while current_byte[0] & 0b1000_0000:
+                        # Read and add the next byte to the subfield
+                        current_byte = fhandle.read(1)
+                        size_subfield += current_byte
+
+                    size_value = self.read_size_subfield(size_subfield)
+
+                # Read in payload for variable-size fields here
+                if size_subfield:
+                    chunk += fhandle.read(size_value)
+                else:
+                    pass  # TODO enforce minimums for builtin metadata fields (min 8 byte) etc
+
+            # Read fixed length field payloads here
+            if tag == MixedFields.TAG_HEADER:
+                chunk += fhandle.read(4)  # TODO const for header payload len
+            if tag == MixedFields.TAG_ENDFILE:
+                pass  # EOF is a zero length field
+
+            # Get/check field endbyte
+            end_byte = fhandle.read(1)
+            if tag == MixedFields.TAG_HEADER and end_byte != MixedFields.ENDBYTE_HEADER:
+                raise MixedFieldsError('BAD_HEADER_ENDBYTE', f'Error, bad header endbyte: {str(end_byte)}')
+            if tag == MixedFields.TAG_ENDFILE and end_byte != self.ENDBYTE_ENDFILE:
+                raise MixedFieldsError('BAD_ENDFILE_ENDBYTE', f'Error, bad endfile endbyte: {str(end_byte)}')
+            if tag == MixedFields.TAG_METADATA and end_byte != self.ENDBYTE_META_STOP:
+                raise MixedFieldsError('BAD_METADATA_ENDBYTE', f'Error, bad metadata endbyte: {str(end_byte)}')
+            if tag == MixedFields.TAG_DATA and end_byte != self.ENDBYTE_DATA:
+                raise MixedFieldsError('BAD_DATA_ENDBYTE', f'Error, bad data endbyte: {str(end_byte)}')
+            if tag == MixedFields.TAG_EXTRA_METADATA and end_byte != self.ENDBYTE_EXTRA_METADATA:
+                raise MixedFieldsError('BAD_EXTRA_METADATA_ENDBYTE', f'Error, bad extra metadata endbyte: {str(end_byte)}')
+
+            # Store seek position for subsequent reads
+            self._head = fhandle.tell()
+
+            # Return an annotated field dict
+            field = {
+                MixedFields.INFO.TAG: tag,
+                MixedFields.INFO.PAYLOAD: chunk,
+                MixedFields.INFO.ENDBYTE: end_byte,
+            }
+            return field
 
     # Read a single data field, return the payload bytes (not header, metadata, or end of file tags)
     def read_item(self):
