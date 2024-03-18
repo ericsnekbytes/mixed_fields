@@ -146,7 +146,8 @@ class MixedFields:
             return True
         return False
 
-    def split_sized_chunk(self, chunk):
+    @staticmethod
+    def split_sized_chunk(chunk):
         """Read/remove the size field from the front of a chunk, then return the size and remaining chunk"""
         if len(chunk) == 0:
             raise MixedFieldsError('EMPTY_CHUNK', 'Error, cannot read size from empty chunk')
@@ -157,7 +158,7 @@ class MixedFields:
             size_subfield += bytes([byte_val])
             if not (byte_val & 0b1000_0000):
                 break
-        size_value = self.read_size_subfield(size_subfield)
+        size_value = MixedFields.read_size_subfield(size_subfield)
 
         # Get the chunk remainder
         partial_chunk = b''
@@ -172,7 +173,7 @@ class MixedFields:
 
             tag = fhandle.read(5)  # TODO const for this
             if len(tag) < 5:
-                raise MixedFieldsError('BAD_TAG', 'Error, invalid tag length!')
+                raise MixedFieldsError('BAD_TAG', f'Error, invalid tag length ({tag})')
             chunk = b''
 
             # Validate tag
@@ -245,7 +246,7 @@ class MixedFields:
 
         # Return empty bytes if past end of file
         if not (self._head < file_stats.st_size):
-            return b''
+            return {}
 
         # Start reading fields
         tag = b''
@@ -382,7 +383,8 @@ class MixedFields:
             raise MixedFieldsError('PATH_NONE', 'Error, path is not set')
         return self._write(self.METADATA_FIELD_8_EMPTY)
 
-    def get_size_subfield(self, size):
+    @staticmethod
+    def get_size_subfield(size):
         if size == 0:
             # Size fields are a minimum of 1 byte
             return b'\x00'
@@ -398,14 +400,14 @@ class MixedFields:
 
         # We need groups of 7 bits (starting from the LSB), strip off any
         # leading remainder bits (a 10 bit size would have a (% 7) 3 bit remainder
-        remainder = len(bit_string) % self.SIZE_BITS_PER_SIZE_BYTE
+        remainder = len(bit_string) % MixedFields.SIZE_BITS_PER_SIZE_BYTE
 
         # Get the "packed" size field bytes (with carrier
         # bits added), starting with the leading byte
         most_sig_byte = b''
         if remainder:
             leading_bits_as_num = int(bit_string[:remainder], 2)
-            if len(bit_string) / self.SIZE_BITS_PER_SIZE_BYTE > 1:
+            if len(bit_string) / MixedFields.SIZE_BITS_PER_SIZE_BYTE > 1:
                 leading_bits_as_num = leading_bits_as_num | 0b10_00_00_00
 
             most_sig_byte = leading_bits_as_num.to_bytes(1, 'big')
@@ -413,9 +415,9 @@ class MixedFields:
         # ....
         position = remainder
         while position < len(bit_string):
-            chunk_as_num = int(bit_string[position: position + self.SIZE_BITS_PER_SIZE_BYTE], 2)
+            chunk_as_num = int(bit_string[position: position + MixedFields.SIZE_BITS_PER_SIZE_BYTE], 2)
 
-            position += self.SIZE_BITS_PER_SIZE_BYTE
+            position += MixedFields.SIZE_BITS_PER_SIZE_BYTE
             if position < len(bit_string):
                 # If there are additional bytes coming, set the leading bit to 1
                 chunk_as_num = chunk_as_num | 0b10_00_00_00
@@ -423,11 +425,12 @@ class MixedFields:
 
         return size_field_bits
 
-    def read_size_subfield(self, size_field_bytes):
+    @staticmethod
+    def read_size_subfield(size_field_bytes):
         size_value_bit_string = ''
         for bb in size_field_bytes:
             size_bits_no_carrier = bb & 0b0111_1111  # Strip the leading carrier digit off
-            format_specifier = f'0>{self.SIZE_BITS_PER_SIZE_BYTE}'
+            format_specifier = f'0>{MixedFields.SIZE_BITS_PER_SIZE_BYTE}'
             size_bit_chunk = f'{bin(size_bits_no_carrier)[2:]:{format_specifier}}'  # Remove '0b' and Pad to 7 bits
             size_value_bit_string += size_bit_chunk
         size_value = int(size_value_bit_string, 2)
